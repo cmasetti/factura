@@ -1372,7 +1372,7 @@ export default function InvoiceApp() {
                                   </span>
                                   <div style={styles.documentInfo}>
                                     <span style={styles.documentName}>{doc.name}</span>
-                                    <span style={styles.documentMeta}>
+                                    <span style={styles.expenseDocMeta}>
                                       {(doc.size / 1024).toFixed(1)} Ko
                                     </span>
                                   </div>
@@ -3701,7 +3701,7 @@ const styles = {
     overflow: 'hidden',
     textOverflow: 'ellipsis',
   },
-  documentMeta: {
+  expenseDocMeta: {
     display: 'block',
     fontSize: '12px',
     color: '#999',
