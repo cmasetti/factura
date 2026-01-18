@@ -505,6 +505,8 @@ export default function InvoiceApp() {
           items: inv.items || [],
           notes: inv.notes,
           clientNotes: inv.client_notes,
+          paymentMode: inv.payment_mode,
+          paymentTerms: inv.payment_terms,
           relatedInvoice: inv.related_invoice_id,
         })));
       }
@@ -692,6 +694,8 @@ export default function InvoiceApp() {
       items: invoiceData.items || [],
       notes: invoiceData.notes,
       client_notes: invoiceData.clientNotes,
+      payment_mode: invoiceData.paymentMode,
+      payment_terms: invoiceData.paymentTerms,
       related_invoice_id: invoiceData.relatedInvoice || null,
       updated_at: new Date().toISOString(),
     };
@@ -1088,7 +1092,6 @@ export default function InvoiceApp() {
                     <div 
                       key={invoice.id} 
                       style={styles.invoiceRow}
-                      onClick={() => setSelectedInvoice(invoice)}
                     >
                       <div style={styles.invoiceMain}>
                         <span style={{
@@ -1121,6 +1124,56 @@ export default function InvoiceApp() {
                         <span style={styles.invoiceAmount}>
                           {formatCurrency(totals.total, sellerConfig.currency)}
                         </span>
+                        <div style={styles.invoiceActions}>
+                          <button 
+                            onClick={() => setSelectedInvoice(invoice)} 
+                            style={styles.iconBtn}
+                            title="Voir"
+                          >
+                            👁️
+                          </button>
+                          <button 
+                            onClick={() => setEditingInvoice(invoice)} 
+                            style={styles.iconBtn}
+                            title="Modifier"
+                          >
+                            ✏️
+                          </button>
+                          {invoice.status === 'draft' && (
+                            <button 
+                              onClick={() => {
+                                const updatedInvoice = { ...invoice, status: 'issued' };
+                                if (!invoice.number) {
+                                  updatedInvoice.number = generateInvoiceNumber(invoice.type);
+                                  updatedInvoice.date = new Date().toISOString().split('T')[0];
+                                }
+                                saveInvoice(updatedInvoice);
+                              }}
+                              style={styles.iconBtn}
+                              title="Émettre"
+                            >
+                              📤
+                            </button>
+                          )}
+                          <button 
+                            onClick={() => alert('Téléchargement PDF (à venir)')} 
+                            style={styles.iconBtn}
+                            title="Télécharger PDF"
+                          >
+                            📥
+                          </button>
+                          <button 
+                            onClick={() => {
+                              if (window.confirm('Êtes-vous sûr de vouloir supprimer ce document ?')) {
+                                deleteInvoice(invoice.id);
+                              }
+                            }}
+                            style={{...styles.iconBtn, color: '#e53935'}}
+                            title="Supprimer"
+                          >
+                            🗑️
+                          </button>
+                        </div>
                       </div>
                     </div>
                   );
@@ -1497,22 +1550,27 @@ function InvoiceDetailView({ invoice, client, company, sellerConfig, onBack, onE
       <header style={styles.header}>
         <button onClick={onBack} style={styles.backBtn}>← Retour</button>
         <div style={styles.headerActions}>
+          <button onClick={onEdit} style={styles.secondaryBtn}>Modifier</button>
           {invoice.status === 'draft' && (
-            <>
-              <button onClick={onEdit} style={styles.secondaryBtn}>Modifier</button>
-              <button onClick={() => onStatusChange('issued')} style={styles.primaryBtn}>Émettre</button>
-            </>
+            <button onClick={() => onStatusChange('issued')} style={styles.primaryBtn}>Émettre</button>
           )}
           {invoice.status === 'issued' && (
             <button onClick={() => onStatusChange('paid')} style={styles.primaryBtn}>Marquer payée</button>
           )}
-          {invoice.status === 'draft' && (
-            <button onClick={onDelete} style={{...styles.textBtn, color: '#e53935'}}>Supprimer</button>
-          )}
+          <button 
+            onClick={() => {
+              if (window.confirm('Êtes-vous sûr de vouloir supprimer ce document ?')) {
+                onDelete();
+              }
+            }}
+            style={{...styles.textBtn, color: '#e53935'}}
+          >
+            Supprimer
+          </button>
         </div>
       </header>
 
-      <div style={styles.documentPreview}>
+      <div style={styles.a4Container}>
         <div style={styles.documentHeader}>
           <div style={styles.companyBlock}>
             <p style={styles.companyName}>{company.name}</p>
@@ -1577,7 +1635,7 @@ function InvoiceDetailView({ invoice, client, company, sellerConfig, onBack, onE
           <tbody>
             {(invoice.items || []).map((item, index) => (
               <tr key={index}>
-                <td style={{...styles.tableCell, textAlign: 'left'}}>{item.description}</td>
+                <td style={{...styles.tableCell, textAlign: 'left'}} dangerouslySetInnerHTML={{ __html: item.description }} />
                 <td style={{...styles.tableCell, textAlign: 'center'}}>{item.quantity}</td>
                 <td style={{...styles.tableCell, textAlign: 'right'}}>{formatCurrency(item.unitPrice, sellerConfig.currency)}</td>
                 <td style={{...styles.tableCell, textAlign: 'center'}}>{item.tax}%</td>
@@ -1607,8 +1665,8 @@ function InvoiceDetailView({ invoice, client, company, sellerConfig, onBack, onE
         {(invoice.notes || invoice.clientNotes) && (
           <div style={styles.notesSection}>
             <p style={styles.notesTitle}>Notes</p>
-            <p style={styles.notesText}>{invoice.clientNotes}</p>
-            <p style={styles.notesText}>{invoice.notes}</p>
+            {invoice.clientNotes && <p style={{...styles.notesText, whiteSpace: 'pre-wrap'}}>{invoice.clientNotes}</p>}
+            {invoice.notes && <p style={{...styles.notesText, whiteSpace: 'pre-wrap'}}>{invoice.notes}</p>}
           </div>
         )}
 
@@ -1620,6 +1678,8 @@ function InvoiceDetailView({ invoice, client, company, sellerConfig, onBack, onE
             <p style={styles.bankInfo}>BIC: {company.bic}</p>
           </div>
         )}
+
+        <div style={styles.a4Footer}>1/1</div>
       </div>
     </div>
   );
@@ -1637,6 +1697,8 @@ function GuidedInvoiceCreator({ invoice, clients, company, sellerConfig, generat
     items: invoice?.items?.length > 0 ? invoice.items : [{ description: '', quantity: 1, unitPrice: 0, tax: company.defaultTaxRate || 20 }],
     notes: invoice?.notes || '',
     clientNotes: invoice?.clientNotes || '',
+    paymentMode: invoice?.paymentMode || company.defaultPaymentMode || 'Virement bancaire',
+    paymentTerms: invoice?.paymentTerms || company.defaultPaymentTerms || 30,
     id: invoice?.id || null
   });
   const [showClientForm, setShowClientForm] = useState(false);
@@ -1737,7 +1799,6 @@ function GuidedInvoiceCreator({ invoice, clients, company, sellerConfig, generat
             <div style={styles.stepFormContainer}>
               <div style={styles.stepFormContent}>
                 <div style={styles.stepContentCentered}>
-                  <div style={styles.stepIcon}>👤</div>
                   <h3 style={styles.stepTitle}>Sélectionnez un client</h3>
                   <p style={styles.stepDescription}>Choisissez le client à facturer</p>
                 </div>
@@ -1753,12 +1814,14 @@ function GuidedInvoiceCreator({ invoice, clients, company, sellerConfig, generat
                   ))}
                 </select>
 
-                <button 
-                  onClick={() => setShowClientForm(true)} 
-                  style={{...styles.textBtn, marginTop: '16px'}}
-                >
-                  + Créer un nouveau client
-                </button>
+                <div style={{ textAlign: 'center', marginTop: '16px' }}>
+                  <button 
+                    onClick={() => setShowClientForm(true)} 
+                    style={styles.textBtn}
+                  >
+                    + Créer un nouveau client
+                  </button>
+                </div>
 
                 {selectedClient && (
                   <div style={styles.selectedClientCard}>
@@ -1825,7 +1888,7 @@ function GuidedInvoiceCreator({ invoice, clients, company, sellerConfig, generat
                           }}
                           style={styles.descriptionTextarea}
                           placeholder="Description du produit ou service"
-                          rows={1}
+                          rows={3}
                         />
                       </div>
                       <div style={styles.lineItemGrid}>
@@ -1896,22 +1959,34 @@ function GuidedInvoiceCreator({ invoice, clients, company, sellerConfig, generat
             <div style={styles.stepFormContainer}>
               <div style={styles.stepFormContent}>
                 <div style={styles.stepContentCentered}>
-                  <div style={styles.stepIcon}>✓</div>
                   <h3 style={styles.stepTitle}>Finalisation</h3>
                   <p style={styles.stepDescription}>Vérifiez et ajoutez des notes</p>
                 </div>
 
-                <div style={styles.defaultsCard}>
-                  <p style={styles.defaultsTitle}>Paramètres par défaut appliqués</p>
-                  <div style={styles.defaultsGrid}>
-                    <div>
-                      <span style={styles.defaultsLabel}>Mode de paiement</span>
-                      <span style={styles.defaultsValue}>{company.defaultPaymentMode}</span>
-                    </div>
-                    <div>
-                      <span style={styles.defaultsLabel}>Délai de paiement</span>
-                      <span style={styles.defaultsValue}>{company.defaultPaymentTerms} jours</span>
-                    </div>
+                <div style={styles.formRow}>
+                  <div style={{...styles.formGroup, flex: 1}}>
+                    <label style={styles.label}>Mode de paiement</label>
+                    <select
+                      value={form.paymentMode}
+                      onChange={(e) => setForm({ ...form, paymentMode: e.target.value })}
+                      style={styles.select}
+                    >
+                      <option value="Virement bancaire">Virement bancaire</option>
+                      <option value="Carte bancaire">Carte bancaire</option>
+                      <option value="Chèque">Chèque</option>
+                      <option value="Espèces">Espèces</option>
+                      <option value="Prélèvement">Prélèvement</option>
+                    </select>
+                  </div>
+                  <div style={{...styles.formGroup, flex: 1}}>
+                    <label style={styles.label}>Délai de paiement (jours)</label>
+                    <input
+                      type="number"
+                      value={form.paymentTerms}
+                      onChange={(e) => setForm({ ...form, paymentTerms: parseInt(e.target.value) || 0 })}
+                      style={styles.input}
+                      min="0"
+                    />
                   </div>
                 </div>
 
@@ -1967,14 +2042,18 @@ function GuidedInvoiceCreator({ invoice, clients, company, sellerConfig, generat
           {/* Step 4: Preview */}
           {currentStep === 4 && (
             <div style={styles.previewStepContainer}>
-              <div style={styles.previewDocument}>
+              <div style={styles.a4Container}>
                 {/* Document preview content */}
                 <div style={styles.documentHeader}>
                   <div style={styles.companyBlock}>
                     <p style={styles.companyName}>{company.name}</p>
+                    <p style={styles.companyInfo}>{company.legalStatus}</p>
                     <p style={styles.companyInfo}>{company.addressLine1}</p>
                     <p style={styles.companyInfo}>{company.addressLine2}</p>
+                    <p style={styles.companyInfo}>{company.email}</p>
+                    <p style={styles.companyInfo}>{company.phone}</p>
                     {company.siret && <p style={styles.companyInfo}>SIRET: {company.siret}</p>}
+                    {company.taxId && <p style={styles.companyInfo}>{sellerConfig?.taxName}: {company.taxId}</p>}
                   </div>
                   <div style={styles.invoiceTitle}>
                     <h1 style={styles.documentTitle}>{form.type === 'credit' ? 'Avoir' : 'Facture'}</h1>
@@ -1986,31 +2065,45 @@ function GuidedInvoiceCreator({ invoice, clients, company, sellerConfig, generat
                   <div style={styles.clientBlock}>
                     <span style={styles.metaLabel}>Facturer à</span>
                     <p style={styles.clientBlockName}>{selectedClient?.name}</p>
+                    {selectedClient?.contactName && <p style={styles.clientBlockContact}>{selectedClient.contactName}</p>}
                     <p style={styles.clientBlockInfo}>{selectedClient?.addressLine1}</p>
                     <p style={styles.clientBlockInfo}>{selectedClient?.addressLine2}</p>
-                    {selectedClient?.vatNumber && (
-                      <p style={styles.clientBlockInfo}>TVA: {selectedClient.vatNumber}</p>
-                    )}
+                    {selectedClient?.siret && <p style={styles.clientBlockInfo}>SIREN/SIRET: {selectedClient.siret}</p>}
+                    {selectedClient?.vatNumber && <p style={styles.clientBlockInfo}>TVA Intracom.: {selectedClient.vatNumber}</p>}
+                  </div>
+                  <div style={styles.datesBlock}>
+                    <div style={styles.dateItem}>
+                      <span style={styles.metaLabel}>Date</span>
+                      <span style={styles.dateValue}>
+                        {form.date ? formatDate(form.date, sellerConfig.dateFormat) : 'À définir'}
+                      </span>
+                    </div>
+                    <div style={styles.dateItem}>
+                      <span style={styles.metaLabel}>Échéance</span>
+                      <span style={styles.dateValue}>
+                        {form.dueDate ? formatDate(form.dueDate, sellerConfig.dateFormat) : `${form.paymentTerms} jours`}
+                      </span>
+                    </div>
                   </div>
                 </div>
 
                 <table style={styles.invoiceTable}>
                   <thead>
                     <tr>
-                      <th style={styles.tableHeader}>Description</th>
-                      <th style={{...styles.tableHeader, textAlign: 'right'}}>Qté</th>
+                      <th style={{...styles.tableHeader, textAlign: 'left'}}>Description</th>
+                      <th style={{...styles.tableHeader, textAlign: 'center'}}>Qté</th>
                       <th style={{...styles.tableHeader, textAlign: 'right'}}>Prix unit.</th>
-                      <th style={{...styles.tableHeader, textAlign: 'right'}}>{sellerConfig?.taxName}</th>
+                      <th style={{...styles.tableHeader, textAlign: 'center'}}>{sellerConfig?.taxName}</th>
                       <th style={{...styles.tableHeader, textAlign: 'right'}}>Total</th>
                     </tr>
                   </thead>
                   <tbody>
                     {form.items.filter(i => i.description).map((item, index) => (
                       <tr key={index}>
-                        <td style={styles.tableCell}>{item.description}</td>
-                        <td style={{...styles.tableCell, textAlign: 'right'}}>{item.quantity}</td>
+                        <td style={{...styles.tableCell, textAlign: 'left'}} dangerouslySetInnerHTML={{ __html: item.description }} />
+                        <td style={{...styles.tableCell, textAlign: 'center'}}>{item.quantity}</td>
                         <td style={{...styles.tableCell, textAlign: 'right'}}>{formatCurrency(item.unitPrice, sellerConfig.currency)}</td>
-                        <td style={{...styles.tableCell, textAlign: 'right'}}>{item.tax}%</td>
+                        <td style={{...styles.tableCell, textAlign: 'center'}}>{item.tax}%</td>
                         <td style={{...styles.tableCell, textAlign: 'right'}}>{formatCurrency(item.quantity * item.unitPrice * (1 + item.tax/100), sellerConfig.currency)}</td>
                       </tr>
                     ))}
@@ -2033,6 +2126,25 @@ function GuidedInvoiceCreator({ invoice, clients, company, sellerConfig, generat
                     </div>
                   </div>
                 </div>
+
+                {(form.clientNotes || form.notes) && (
+                  <div style={styles.notesSection}>
+                    <p style={styles.notesTitle}>Notes</p>
+                    {form.clientNotes && <p style={{...styles.notesText, whiteSpace: 'pre-wrap'}}>{form.clientNotes}</p>}
+                    {form.notes && <p style={{...styles.notesText, whiteSpace: 'pre-wrap'}}>{form.notes}</p>}
+                  </div>
+                )}
+
+                {company.bankName && (
+                  <div style={styles.bankSection}>
+                    <p style={styles.bankTitle}>Coordonnées bancaires</p>
+                    <p style={styles.bankInfo}>{company.bankName}</p>
+                    <p style={styles.bankInfo}>IBAN: {company.iban}</p>
+                    <p style={styles.bankInfo}>BIC: {company.bic}</p>
+                  </div>
+                )}
+
+                <div style={styles.a4Footer}>1/1</div>
               </div>
 
               <div style={styles.previewActions}>
@@ -2712,8 +2824,21 @@ const styles = {
     background: '#fff',
     borderRadius: '8px',
     border: '1px solid #eee',
-    cursor: 'pointer',
     transition: 'all 0.15s ease',
+  },
+  invoiceActions: {
+    display: 'flex',
+    gap: '8px',
+    alignItems: 'center',
+  },
+  iconBtn: {
+    background: 'none',
+    border: 'none',
+    fontSize: '18px',
+    cursor: 'pointer',
+    padding: '6px',
+    borderRadius: '4px',
+    transition: 'background 0.15s ease',
   },
   invoiceMain: {
     display: 'flex',
@@ -3026,8 +3151,9 @@ const styles = {
     marginBottom: '24px',
   },
   stepTotalBadge: {
-    background: '#1a1a1a',
-    color: '#fff',
+    background: 'transparent',
+    color: '#1a1a1a',
+    border: '2px solid #1a1a1a',
     padding: '12px 20px',
     borderRadius: '8px',
     fontSize: '14px',
@@ -3148,7 +3274,7 @@ const styles = {
     fontSize: '14px',
     resize: 'none',
     overflow: 'hidden',
-    minHeight: '44px',
+    minHeight: '68px',
     lineHeight: 1.4,
     fontFamily: 'inherit',
     boxSizing: 'border-box',
@@ -3720,5 +3846,23 @@ const styles = {
   },
   syncIcon: {
     fontSize: '14px',
+  },
+  // A4 Document styles
+  a4Container: {
+    width: '210mm',
+    minHeight: '297mm',
+    background: '#fff',
+    margin: '20px auto',
+    padding: '20mm',
+    boxShadow: '0 4px 24px rgba(0,0,0,0.1)',
+    boxSizing: 'border-box',
+    position: 'relative',
+  },
+  a4Footer: {
+    position: 'absolute',
+    bottom: '15mm',
+    right: '20mm',
+    fontSize: '11px',
+    color: '#999',
   },
 };
