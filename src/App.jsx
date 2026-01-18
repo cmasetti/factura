@@ -1,5 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { createClient } from '@supabase/supabase-js';
+import jsPDF from 'jspdf';
+import html2canvas from 'html2canvas';
 
 // Supabase Configuration
 const SUPABASE_URL = 'https://vqjvxbayeiyapmrbvwcj.supabase.co';
@@ -814,7 +816,7 @@ export default function InvoiceApp() {
       i.status !== 'draft' && 
       i.number && 
       invoice.number &&
-      i.number > invoice.number
+      i.number.localeCompare(invoice.number) > 0
     ).sort((a, b) => a.number.localeCompare(b.number));
 
     if (newerDocs.length > 0 && invoice.status !== 'draft') {
@@ -899,9 +901,35 @@ export default function InvoiceApp() {
   // Export invoice to PDF
   const exportToPDF = async (invoiceId) => {
     const invoice = invoices.find(i => i.id === invoiceId);
-    if (!invoice) return;
+    if (!invoice) {
+      notify('Facture introuvable', 'error');
+      return;
+    }
 
     const client = clients.find(c => c.id === invoice.clientId);
+    const totals = calculateTotals(invoice.items || []);
+    
+    // Pre-format all values
+    const formattedDate = invoice.date ? formatDate(invoice.date, sellerConfig.dateFormat) : '-';
+    const formattedDueDate = invoice.dueDate ? formatDate(invoice.dueDate, sellerConfig.dateFormat) : '-';
+    const formattedSubtotal = formatCurrency(totals.subtotal, sellerConfig.currency);
+    const formattedTax = formatCurrency(totals.taxAmount, sellerConfig.currency);
+    const formattedTotal = formatCurrency(totals.total, sellerConfig.currency);
+    
+    // Format line items
+    const itemsHTML = (invoice.items || []).map(item => {
+      const unitPrice = formatCurrency(item.unitPrice, sellerConfig.currency);
+      const lineTotal = formatCurrency(item.quantity * item.unitPrice * (1 + item.tax/100), sellerConfig.currency);
+      return `
+        <tr style="border-bottom: 1px solid #eee;">
+          <td style="padding: 12px 8px; font-size: 13px;">${item.description || ''}</td>
+          <td style="padding: 12px 8px; text-align: center; font-size: 13px;">${item.quantity}</td>
+          <td style="padding: 12px 8px; text-align: right; font-size: 13px;">${unitPrice}</td>
+          <td style="padding: 12px 8px; text-align: center; font-size: 13px;">${item.tax}%</td>
+          <td style="padding: 12px 8px; text-align: right; font-size: 13px;">${lineTotal}</td>
+        </tr>
+      `;
+    }).join('');
     
     // Create a hidden A4 container for rendering
     const container = document.createElement('div');
@@ -920,14 +948,10 @@ export default function InvoiceApp() {
     a4Element.style.fontFamily = 'Lato, sans-serif';
     a4Element.style.position = 'relative';
     
-    // Generate HTML content (similar to InvoiceDetailView)
-    const totals = calculateTotals(invoice.items || []);
-    const transactionType = getTransactionType(company.country, client?.country, !!client?.vatNumber);
-    
     a4Element.innerHTML = `
       <div style="display: flex; justify-content: space-between; margin-bottom: 32px;">
         <div>
-          <p style="font-size: 18px; font-weight: 600; margin: 0 0 8px 0; font-family: Lora, serif;">${company.name}</p>
+          <p style="font-size: 18px; font-weight: 600; margin: 0 0 8px 0; font-family: Lora, serif;">${company.name || ''}</p>
           <p style="font-size: 13px; color: #666; margin: 2px 0;">${company.legalStatus || ''}</p>
           <p style="font-size: 13px; color: #666; margin: 2px 0;">${company.addressLine1 || ''}</p>
           <p style="font-size: 13px; color: #666; margin: 2px 0;">${company.addressLine2 || ''}</p>
@@ -954,11 +978,11 @@ export default function InvoiceApp() {
         <div>
           <div style="margin-bottom: 12px;">
             <span style="font-size: 11px; font-weight: 600; color: #999; text-transform: uppercase; display: block;">Date</span>
-            <span style="font-size: 14px;">${invoice.date ? formatDate(invoice.date, sellerConfig.dateFormat) : '-'}</span>
+            <span style="font-size: 14px;">${formattedDate}</span>
           </div>
           <div>
             <span style="font-size: 11px; font-weight: 600; color: #999; text-transform: uppercase; display: block;">Échéance</span>
-            <span style="font-size: 14px;">${invoice.dueDate ? formatDate(invoice.dueDate, sellerConfig.dateFormat) : '-'}</span>
+            <span style="font-size: 14px;">${formattedDueDate}</span>
           </div>
         </div>
       </div>
@@ -974,15 +998,7 @@ export default function InvoiceApp() {
           </tr>
         </thead>
         <tbody>
-          ${(invoice.items || []).map(item => `
-            <tr style="border-bottom: 1px solid #eee;">
-              <td style="padding: 12px 8px; font-size: 13px;">${item.description}</td>
-              <td style="padding: 12px 8px; text-align: center; font-size: 13px;">${item.quantity}</td>
-              <td style="padding: 12px 8px; text-align: right; font-size: 13px;">${formatCurrency(item.unitPrice, sellerConfig.currency)}</td>
-              <td style="padding: 12px 8px; text-align: center; font-size: 13px;">${item.tax}%</td>
-              <td style="padding: 12px 8px; text-align: right; font-size: 13px;">${formatCurrency(item.quantity * item.unitPrice * (1 + item.tax/100), sellerConfig.currency)}</td>
-            </tr>
-          `).join('')}
+          ${itemsHTML}
         </tbody>
       </table>
 
@@ -990,15 +1006,15 @@ export default function InvoiceApp() {
         <div style="min-width: 300px;">
           <div style="display: flex; justify-content: space-between; padding: 8px 0; font-size: 14px;">
             <span>Sous-total HT</span>
-            <span>${formatCurrency(totals.subtotal, sellerConfig.currency)}</span>
+            <span>${formattedSubtotal}</span>
           </div>
           <div style="display: flex; justify-content: space-between; padding: 8px 0; font-size: 14px;">
             <span>${sellerConfig?.taxName || 'TVA'}</span>
-            <span>${formatCurrency(totals.taxAmount, sellerConfig.currency)}</span>
+            <span>${formattedTax}</span>
           </div>
           <div style="display: flex; justify-content: space-between; padding: 12px 0; font-size: 16px; font-weight: 600; border-top: 2px solid #1a1a1a;">
             <span>Total TTC</span>
-            <span>${formatCurrency(totals.total, sellerConfig.currency)}</span>
+            <span>${formattedTotal}</span>
           </div>
         </div>
       </div>
@@ -1010,10 +1026,13 @@ export default function InvoiceApp() {
 
     // Use html2canvas to convert to image
     try {
+      notify('Génération du PDF en cours...');
+      
       const canvas = await html2canvas(a4Element, { 
         scale: 2,
         useCORS: true,
-        logging: false 
+        logging: false,
+        backgroundColor: '#ffffff'
       });
 
       // Create PDF
@@ -1025,10 +1044,10 @@ export default function InvoiceApp() {
       pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight);
       pdf.save(`${invoice.type === 'credit' ? 'avoir' : 'facture'}-${invoice.number || 'brouillon'}.pdf`);
 
-      notify('PDF téléchargé');
+      notify('PDF téléchargé avec succès');
     } catch (error) {
+      console.error('PDF generation error:', error);
       notify('Erreur lors de la génération du PDF', 'error');
-      console.error(error);
     } finally {
       document.body.removeChild(container);
     }
