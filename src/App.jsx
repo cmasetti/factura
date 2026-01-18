@@ -401,6 +401,7 @@ export default function InvoiceApp() {
   const [showInviteModal, setShowInviteModal] = useState(false);
   const [showNewSectionModal, setShowNewSectionModal] = useState(false);
   const [dragOverSection, setDragOverSection] = useState(null);
+  const [deleteConfirmation, setDeleteConfirmation] = useState(null);
 
   // Add global tooltip CSS for faster display
   useEffect(() => {
@@ -429,6 +430,22 @@ export default function InvoiceApp() {
       @keyframes fadeIn {
         from { opacity: 0; }
         to { opacity: 1; }
+      }
+      /* Rich Text Editor styles */
+      [contenteditable]:empty:before {
+        content: attr(data-placeholder);
+        color: #999;
+        font-style: italic;
+      }
+      [contenteditable] ul, [contenteditable] ol {
+        margin: 8px 0;
+        padding-left: 24px;
+      }
+      [contenteditable] li {
+        margin: 4px 0;
+      }
+      [contenteditable]:focus {
+        outline: none;
       }
     `;
     document.head.appendChild(style);
@@ -768,9 +785,65 @@ export default function InvoiceApp() {
     }
   };
 
+  // Helper function to decrement invoice number
+  const decrementInvoiceNumber = (number) => {
+    if (!number) return number;
+    
+    // Extract prefix and numeric part
+    const match = number.match(/^(.*)(\d+)$/);
+    if (!match) return number;
+    
+    const prefix = match[1];
+    const numPart = match[2];
+    const decremented = parseInt(numPart) - 1;
+    
+    // Pad with zeros to maintain digit count
+    const paddedNum = decremented.toString().padStart(numPart.length, '0');
+    return `${prefix}${paddedNum}`;
+  };
+
   const deleteInvoice = async (invoiceId) => {
     if (!user) return;
 
+    const invoice = invoices.find(i => i.id === invoiceId);
+    if (!invoice) return;
+
+    // Check if there are newer issued documents of the same type
+    const newerDocs = invoices.filter(i => 
+      i.type === invoice.type && 
+      i.status !== 'draft' && 
+      i.number && 
+      invoice.number &&
+      i.number > invoice.number
+    ).sort((a, b) => a.number.localeCompare(b.number));
+
+    if (newerDocs.length > 0 && invoice.status !== 'draft') {
+      // Show confirmation modal with options
+      setDeleteConfirmation({
+        invoice,
+        newerDocs,
+        onEdit: () => {
+          setDeleteConfirmation(null);
+          setEditingInvoice(invoice);
+        },
+        onDeleteWithGap: async () => {
+          await performDelete(invoiceId);
+          setDeleteConfirmation(null);
+        },
+        onDeleteAndRenumber: async () => {
+          await performDeleteAndRenumber(invoice, newerDocs);
+          setDeleteConfirmation(null);
+        }
+      });
+    } else {
+      // Simple confirmation for drafts or last document
+      if (window.confirm('Êtes-vous sûr de vouloir supprimer ce document ?')) {
+        await performDelete(invoiceId);
+      }
+    }
+  };
+
+  const performDelete = async (invoiceId) => {
     const { error } = await supabase
       .from('invoices')
       .delete()
@@ -782,7 +855,183 @@ export default function InvoiceApp() {
     }
 
     setInvoices(invoices.filter(i => i.id !== invoiceId));
+    setSelectedInvoice(null);
     notify('Document supprimé');
+  };
+
+  const performDeleteAndRenumber = async (invoice, newerDocs) => {
+    // Delete the invoice first
+    const { error: deleteError } = await supabase
+      .from('invoices')
+      .delete()
+      .eq('id', invoice.id);
+
+    if (deleteError) {
+      notify('Erreur lors de la suppression', 'error');
+      return;
+    }
+
+    // Renumber all newer documents
+    const updates = [];
+    for (const doc of newerDocs) {
+      const newNumber = decrementInvoiceNumber(doc.number);
+      
+      const { error } = await supabase
+        .from('invoices')
+        .update({ number: newNumber })
+        .eq('id', doc.id);
+
+      if (!error) {
+        updates.push({ ...doc, number: newNumber });
+      }
+    }
+
+    // Update local state
+    setInvoices(invoices.filter(i => i.id !== invoice.id).map(inv => {
+      const update = updates.find(u => u.id === inv.id);
+      return update || inv;
+    }));
+
+    setSelectedInvoice(null);
+    notify(`Document supprimé et ${newerDocs.length} document(s) renuméroté(s)`);
+  };
+
+  // Export invoice to PDF
+  const exportToPDF = async (invoiceId) => {
+    const invoice = invoices.find(i => i.id === invoiceId);
+    if (!invoice) return;
+
+    const client = clients.find(c => c.id === invoice.clientId);
+    
+    // Create a hidden A4 container for rendering
+    const container = document.createElement('div');
+    container.style.position = 'absolute';
+    container.style.left = '-9999px';
+    container.style.top = '0';
+    document.body.appendChild(container);
+
+    // Render the invoice in A4 format
+    const a4Element = document.createElement('div');
+    a4Element.style.width = '210mm';
+    a4Element.style.minHeight = '297mm';
+    a4Element.style.background = '#fff';
+    a4Element.style.padding = '20mm';
+    a4Element.style.boxSizing = 'border-box';
+    a4Element.style.fontFamily = 'Lato, sans-serif';
+    a4Element.style.position = 'relative';
+    
+    // Generate HTML content (similar to InvoiceDetailView)
+    const totals = calculateTotals(invoice.items || []);
+    const transactionType = getTransactionType(company.country, client?.country, !!client?.vatNumber);
+    
+    a4Element.innerHTML = `
+      <div style="display: flex; justify-content: space-between; margin-bottom: 32px;">
+        <div>
+          <p style="font-size: 18px; font-weight: 600; margin: 0 0 8px 0; font-family: Lora, serif;">${company.name}</p>
+          <p style="font-size: 13px; color: #666; margin: 2px 0;">${company.legalStatus || ''}</p>
+          <p style="font-size: 13px; color: #666; margin: 2px 0;">${company.addressLine1 || ''}</p>
+          <p style="font-size: 13px; color: #666; margin: 2px 0;">${company.addressLine2 || ''}</p>
+          <p style="font-size: 13px; color: #666; margin: 2px 0;">${company.email || ''}</p>
+          ${company.siret ? `<p style="font-size: 13px; color: #666; margin: 2px 0;">SIRET: ${company.siret}</p>` : ''}
+          ${company.taxId ? `<p style="font-size: 13px; color: #666; margin: 2px 0;">${sellerConfig?.taxName}: ${company.taxId}</p>` : ''}
+        </div>
+        <div style="text-align: right;">
+          <h1 style="font-size: 32px; margin: 0 0 8px 0; font-family: Lora, serif;">${invoice.type === 'credit' ? 'Avoir' : 'Facture'}</h1>
+          <p style="font-size: 16px; color: #666; margin: 0;">${invoice.number || 'Brouillon'}</p>
+        </div>
+      </div>
+      
+      <div style="display: flex; justify-content: space-between; margin-bottom: 32px;">
+        <div>
+          <span style="font-size: 11px; font-weight: 600; color: #999; text-transform: uppercase;">Facturer à</span>
+          <p style="font-size: 15px; font-weight: 600; margin: 4px 0;">${client?.name || ''}</p>
+          ${client?.contactName ? `<p style="font-size: 13px; color: #666; margin: 2px 0;">${client.contactName}</p>` : ''}
+          <p style="font-size: 13px; color: #666; margin: 2px 0;">${client?.addressLine1 || ''}</p>
+          <p style="font-size: 13px; color: #666; margin: 2px 0;">${client?.addressLine2 || ''}</p>
+          ${client?.siret ? `<p style="font-size: 13px; color: #666; margin: 2px 0;">SIREN/SIRET: ${client.siret}</p>` : ''}
+          ${client?.vatNumber ? `<p style="font-size: 13px; color: #666; margin: 2px 0;">TVA Intracom.: ${client.vatNumber}</p>` : ''}
+        </div>
+        <div>
+          <div style="margin-bottom: 12px;">
+            <span style="font-size: 11px; font-weight: 600; color: #999; text-transform: uppercase; display: block;">Date</span>
+            <span style="font-size: 14px;">${invoice.date ? formatDate(invoice.date, sellerConfig.dateFormat) : '-'}</span>
+          </div>
+          <div>
+            <span style="font-size: 11px; font-weight: 600; color: #999; text-transform: uppercase; display: block;">Échéance</span>
+            <span style="font-size: 14px;">${invoice.dueDate ? formatDate(invoice.dueDate, sellerConfig.dateFormat) : '-'}</span>
+          </div>
+        </div>
+      </div>
+
+      <table style="width: 100%; border-collapse: collapse; margin-bottom: 32px;">
+        <thead>
+          <tr style="border-bottom: 2px solid #1a1a1a;">
+            <th style="padding: 12px 8px; text-align: left; font-size: 12px; font-weight: 600; color: #1a1a1a;">Description</th>
+            <th style="padding: 12px 8px; text-align: center; font-size: 12px; font-weight: 600; color: #1a1a1a;">Qté</th>
+            <th style="padding: 12px 8px; text-align: right; font-size: 12px; font-weight: 600; color: #1a1a1a;">Prix unit.</th>
+            <th style="padding: 12px 8px; text-align: center; font-size: 12px; font-weight: 600; color: #1a1a1a;">${sellerConfig?.taxName || 'TVA'}</th>
+            <th style="padding: 12px 8px; text-align: right; font-size: 12px; font-weight: 600; color: #1a1a1a;">Total</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${(invoice.items || []).map(item => `
+            <tr style="border-bottom: 1px solid #eee;">
+              <td style="padding: 12px 8px; font-size: 13px;">${item.description}</td>
+              <td style="padding: 12px 8px; text-align: center; font-size: 13px;">${item.quantity}</td>
+              <td style="padding: 12px 8px; text-align: right; font-size: 13px;">${formatCurrency(item.unitPrice, sellerConfig.currency)}</td>
+              <td style="padding: 12px 8px; text-align: center; font-size: 13px;">${item.tax}%</td>
+              <td style="padding: 12px 8px; text-align: right; font-size: 13px;">${formatCurrency(item.quantity * item.unitPrice * (1 + item.tax/100), sellerConfig.currency)}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+
+      <div style="display: flex; justify-content: flex-end; margin-bottom: 40px;">
+        <div style="min-width: 300px;">
+          <div style="display: flex; justify-content: space-between; padding: 8px 0; font-size: 14px;">
+            <span>Sous-total HT</span>
+            <span>${formatCurrency(totals.subtotal, sellerConfig.currency)}</span>
+          </div>
+          <div style="display: flex; justify-content: space-between; padding: 8px 0; font-size: 14px;">
+            <span>${sellerConfig?.taxName || 'TVA'}</span>
+            <span>${formatCurrency(totals.taxAmount, sellerConfig.currency)}</span>
+          </div>
+          <div style="display: flex; justify-content: space-between; padding: 12px 0; font-size: 16px; font-weight: 600; border-top: 2px solid #1a1a1a;">
+            <span>Total TTC</span>
+            <span>${formatCurrency(totals.total, sellerConfig.currency)}</span>
+          </div>
+        </div>
+      </div>
+
+      <div style="position: absolute; bottom: 15mm; right: 20mm; font-size: 11px; color: #999;">1/1</div>
+    `;
+    
+    container.appendChild(a4Element);
+
+    // Use html2canvas to convert to image
+    try {
+      const canvas = await html2canvas(a4Element, { 
+        scale: 2,
+        useCORS: true,
+        logging: false 
+      });
+
+      // Create PDF
+      const pdf = new jsPDF('p', 'mm', 'a4');
+      const imgData = canvas.toDataURL('image/png');
+      const pdfWidth = pdf.internal.pageSize.getWidth();
+      const pdfHeight = pdf.internal.pageSize.getHeight();
+
+      pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight);
+      pdf.save(`${invoice.type === 'credit' ? 'avoir' : 'facture'}-${invoice.number || 'brouillon'}.pdf`);
+
+      notify('PDF téléchargé');
+    } catch (error) {
+      notify('Erreur lors de la génération du PDF', 'error');
+      console.error(error);
+    } finally {
+      document.body.removeChild(container);
+    }
   };
 
   // Expense section operations
@@ -1199,7 +1448,10 @@ export default function InvoiceApp() {
                             </button>
                           )}
                           <button 
-                            onClick={() => alert('Téléchargement PDF (à venir)')} 
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              exportToPDF(invoice.id);
+                            }} 
                             style={styles.iconBtn}
                             title="Télécharger PDF"
                           >
@@ -1208,10 +1460,9 @@ export default function InvoiceApp() {
                             </svg>
                           </button>
                           <button 
-                            onClick={() => {
-                              if (window.confirm('Êtes-vous sûr de vouloir supprimer ce document ?')) {
-                                deleteInvoice(invoice.id);
-                              }
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              deleteInvoice(invoice.id);
                             }}
                             style={{...styles.iconBtn, color: '#e53935'}}
                             title="Supprimer"
@@ -1240,6 +1491,7 @@ export default function InvoiceApp() {
             onBack={() => setSelectedInvoice(null)}
             onEdit={() => { setEditingInvoice(selectedInvoice); setSelectedInvoice(null); }}
             onDelete={() => { deleteInvoice(selectedInvoice.id); setSelectedInvoice(null); }}
+            onExportPDF={() => exportToPDF(selectedInvoice.id)}
             onStatusChange={(newStatus) => {
               const updatedInvoice = { ...selectedInvoice, status: newStatus };
               if (newStatus !== 'draft' && !selectedInvoice.number) {
@@ -1589,7 +1841,7 @@ export default function InvoiceApp() {
 
 // ==================== SUB-COMPONENTS ====================
 
-function InvoiceDetailView({ invoice, client, company, sellerConfig, onBack, onEdit, onDelete, onStatusChange, formatCurrency, formatDate }) {
+function InvoiceDetailView({ invoice, client, company, sellerConfig, onBack, onEdit, onDelete, onExportPDF, onStatusChange, formatCurrency, formatDate }) {
   const totals = calculateTotals(invoice.items || []);
   const transactionType = getTransactionType(company?.country, client?.country, !!client?.vatNumber);
 
@@ -1599,6 +1851,7 @@ function InvoiceDetailView({ invoice, client, company, sellerConfig, onBack, onE
         <button onClick={onBack} style={styles.backBtn}>← Retour</button>
         <div style={styles.headerActions}>
           <button onClick={onEdit} style={styles.secondaryBtn}>Modifier</button>
+          <button onClick={onExportPDF} style={styles.secondaryBtn}>📥 Télécharger PDF</button>
           {invoice.status === 'draft' && (
             <button onClick={() => onStatusChange('issued')} style={styles.primaryBtn}>Émettre</button>
           )}
@@ -1606,11 +1859,7 @@ function InvoiceDetailView({ invoice, client, company, sellerConfig, onBack, onE
             <button onClick={() => onStatusChange('paid')} style={styles.primaryBtn}>Marquer payée</button>
           )}
           <button 
-            onClick={() => {
-              if (window.confirm('Êtes-vous sûr de vouloir supprimer ce document ?')) {
-                onDelete();
-              }
-            }}
+            onClick={onDelete}
             style={{...styles.textBtn, color: '#e53935'}}
           >
             Supprimer
@@ -1729,6 +1978,82 @@ function InvoiceDetailView({ invoice, client, company, sellerConfig, onBack, onE
 
         <div style={styles.a4Footer}>1/1</div>
       </div>
+    </div>
+  );
+}
+
+function RichTextEditor({ value, onChange, placeholder, minRows = 3 }) {
+  const editorRef = useRef(null);
+
+  useEffect(() => {
+    if (editorRef.current && !editorRef.current.innerHTML && value) {
+      editorRef.current.innerHTML = value;
+    }
+  }, []);
+
+  const execCommand = (command, value = null) => {
+    document.execCommand(command, false, value);
+    editorRef.current?.focus();
+  };
+
+  const handleInput = () => {
+    const content = editorRef.current?.innerHTML || '';
+    onChange(content);
+  };
+
+  const handlePaste = (e) => {
+    e.preventDefault();
+    const text = e.clipboardData.getData('text/plain');
+    document.execCommand('insertText', false, text);
+  };
+
+  return (
+    <div style={styles.richEditorContainer}>
+      <div style={styles.richEditorToolbar}>
+        <button 
+          type="button"
+          onClick={() => execCommand('bold')} 
+          style={styles.richEditorBtn}
+          title="Gras (Ctrl+B)"
+        >
+          <strong>B</strong>
+        </button>
+        <button 
+          type="button"
+          onClick={() => execCommand('hiliteColor', '#ffeb3b')} 
+          style={styles.richEditorBtn}
+          title="Surligner"
+        >
+          <span style={{ backgroundColor: '#ffeb3b', padding: '0 4px' }}>A</span>
+        </button>
+        <button 
+          type="button"
+          onClick={() => execCommand('insertUnorderedList')} 
+          style={styles.richEditorBtn}
+          title="Liste à puces"
+        >
+          • • •
+        </button>
+        <button 
+          type="button"
+          onClick={() => execCommand('insertOrderedList')} 
+          style={styles.richEditorBtn}
+          title="Liste numérotée"
+        >
+          1. 2. 3.
+        </button>
+      </div>
+      <div
+        ref={editorRef}
+        contentEditable
+        onInput={handleInput}
+        onPaste={handlePaste}
+        style={{
+          ...styles.richEditorContent,
+          minHeight: `${minRows * 20 + 24}px`
+        }}
+        data-placeholder={placeholder}
+      />
     </div>
   );
 }
@@ -1927,16 +2252,11 @@ function GuidedInvoiceCreator({ invoice, clients, company, sellerConfig, generat
                     <div key={index} style={styles.lineItemCardCompact}>
                       <div style={styles.formGroup}>
                         <label style={styles.labelSmall}>Description</label>
-                        <textarea
+                        <RichTextEditor
                           value={item.description}
-                          onChange={(e) => {
-                            updateItem(index, 'description', e.target.value);
-                            e.target.style.height = 'auto';
-                            e.target.style.height = e.target.scrollHeight + 'px';
-                          }}
-                          style={styles.descriptionTextarea}
+                          onChange={(content) => updateItem(index, 'description', content)}
                           placeholder="Description du produit ou service"
-                          rows={3}
+                          minRows={3}
                         />
                       </div>
                       <div style={styles.lineItemGrid}>
@@ -2647,6 +2967,47 @@ function SettingsView({ company, onSave, userEmail }) {
           </div>
         )}
       </div>
+
+      {/* Delete Confirmation Modal */}
+      {deleteConfirmation && (
+        <div style={styles.modalOverlay}>
+          <div style={styles.modalContent}>
+            <h3 style={styles.modalTitle}>Suppression de document</h3>
+            <p style={styles.modalText}>
+              Un document plus récent a déjà été émis, supprimer celui-ci va générer un trou dans la numérotation.
+            </p>
+            <p style={styles.modalText}>
+              <strong>Nous vous recommandons donc d'éditer ce document plutôt que de le supprimer.</strong>
+            </p>
+            <div style={styles.modalButtons}>
+              <button 
+                onClick={deleteConfirmation.onEdit} 
+                style={styles.primaryBtn}
+              >
+                Modifier plutôt
+              </button>
+              <button 
+                onClick={deleteConfirmation.onDeleteWithGap} 
+                style={styles.secondaryBtn}
+              >
+                Supprimer et laisser le trou
+              </button>
+              <button 
+                onClick={deleteConfirmation.onDeleteAndRenumber} 
+                style={styles.secondaryBtn}
+              >
+                Supprimer et décaler la numérotation des docs plus récents
+              </button>
+              <button 
+                onClick={() => setDeleteConfirmation(null)} 
+                style={styles.textBtn}
+              >
+                Annuler
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -3925,5 +4286,77 @@ const styles = {
     bottom: '25mm',
     left: '20mm',
     right: '20mm',
+  },
+  // Rich Text Editor styles
+  richEditorContainer: {
+    border: '1px solid #e0e0e0',
+    borderRadius: '8px',
+    overflow: 'hidden',
+  },
+  richEditorToolbar: {
+    display: 'flex',
+    gap: '4px',
+    padding: '8px',
+    background: '#f8f8f8',
+    borderBottom: '1px solid #e0e0e0',
+  },
+  richEditorBtn: {
+    background: '#fff',
+    border: '1px solid #ddd',
+    borderRadius: '4px',
+    padding: '6px 10px',
+    fontSize: '13px',
+    cursor: 'pointer',
+    transition: 'all 0.15s ease',
+    fontFamily: 'inherit',
+  },
+  richEditorContent: {
+    padding: '12px 14px',
+    fontSize: '14px',
+    lineHeight: 1.4,
+    outline: 'none',
+    minHeight: '84px',
+    maxHeight: '300px',
+    overflowY: 'auto',
+    fontFamily: 'Lato, sans-serif',
+  },
+  // Modal styles
+  modalOverlay: {
+    position: 'fixed',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    background: 'rgba(0, 0, 0, 0.5)',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 2000,
+  },
+  modalContent: {
+    background: '#fff',
+    borderRadius: '12px',
+    padding: '32px',
+    maxWidth: '500px',
+    width: '90%',
+    boxShadow: '0 8px 32px rgba(0,0,0,0.2)',
+  },
+  modalTitle: {
+    fontSize: '20px',
+    fontWeight: 600,
+    margin: '0 0 16px 0',
+    fontFamily: 'Lora, serif',
+  },
+  modalText: {
+    fontSize: '14px',
+    color: '#666',
+    margin: '0 0 12px 0',
+    lineHeight: 1.5,
+  },
+  modalButtons: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '12px',
+    marginTop: '24px',
   },
 };
