@@ -402,6 +402,39 @@ export default function InvoiceApp() {
   const [showNewSectionModal, setShowNewSectionModal] = useState(false);
   const [dragOverSection, setDragOverSection] = useState(null);
 
+  // Add global tooltip CSS for faster display
+  useEffect(() => {
+    const style = document.createElement('style');
+    style.textContent = `
+      [title] {
+        position: relative;
+      }
+      [title]:hover::after {
+        content: attr(title);
+        position: absolute;
+        bottom: 100%;
+        left: 50%;
+        transform: translateX(-50%);
+        padding: 4px 8px;
+        background: #1a1a1a;
+        color: white;
+        font-size: 12px;
+        white-space: nowrap;
+        border-radius: 4px;
+        pointer-events: none;
+        z-index: 1000;
+        margin-bottom: 4px;
+        animation: fadeIn 0.1s;
+      }
+      @keyframes fadeIn {
+        from { opacity: 0; }
+        to { opacity: 1; }
+      }
+    `;
+    document.head.appendChild(style);
+    return () => document.head.removeChild(style);
+  }, []);
+
   // Check auth state on mount
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -638,11 +671,12 @@ export default function InvoiceApp() {
 
       if (error) {
         notify('Erreur lors de la mise à jour', 'error');
-        return;
+        return null;
       }
 
       setClients(clients.map(c => c.id === clientData.id ? clientData : c));
       notify('Client modifié');
+      return clientData;
     } else {
       // Insert new
       const { data, error } = await supabase
@@ -653,12 +687,13 @@ export default function InvoiceApp() {
 
       if (error) {
         notify('Erreur lors de la création', 'error');
-        return;
+        return null;
       }
 
       const newClient = { ...clientData, id: data.id };
       setClients([newClient, ...clients]);
       notify('Client ajouté');
+      return newClient;
     }
   };
 
@@ -1130,14 +1165,20 @@ export default function InvoiceApp() {
                             style={styles.iconBtn}
                             title="Voir"
                           >
-                            👁️
+                            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                              <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="1.5"/>
+                              <circle cx="8" cy="8" r="2" fill="currentColor"/>
+                            </svg>
                           </button>
                           <button 
                             onClick={() => setEditingInvoice(invoice)} 
                             style={styles.iconBtn}
                             title="Modifier"
                           >
-                            ✏️
+                            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                              <path d="M2 11V14H5L13 6L10 3L2 11Z" stroke="currentColor" strokeWidth="1.5" fill="none"/>
+                              <path d="M10 3L13 6" stroke="currentColor" strokeWidth="1.5"/>
+                            </svg>
                           </button>
                           {invoice.status === 'draft' && (
                             <button 
@@ -1152,7 +1193,9 @@ export default function InvoiceApp() {
                               style={styles.iconBtn}
                               title="Émettre"
                             >
-                              📤
+                              <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                                <path d="M2 8L14 8M14 8L9 3M14 8L9 13" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                              </svg>
                             </button>
                           )}
                           <button 
@@ -1160,7 +1203,9 @@ export default function InvoiceApp() {
                             style={styles.iconBtn}
                             title="Télécharger PDF"
                           >
-                            📥
+                            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                              <path d="M8 2V12M8 12L4 8M8 12L12 8M2 14H14" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                            </svg>
                           </button>
                           <button 
                             onClick={() => {
@@ -1171,7 +1216,9 @@ export default function InvoiceApp() {
                             style={{...styles.iconBtn, color: '#e53935'}}
                             title="Supprimer"
                           >
-                            🗑️
+                            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                              <path d="M3 3L13 13M13 3L3 13" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                            </svg>
                           </button>
                         </div>
                       </div>
@@ -1220,8 +1267,9 @@ export default function InvoiceApp() {
               setEditingInvoice(null);
             }}
             onCancel={() => setEditingInvoice(null)}
-            onCreateClient={(clientData) => {
-              saveClient(clientData);
+            onCreateClient={async (clientData) => {
+              const newClient = await saveClient(clientData);
+              return newClient;
             }}
             formatCurrency={formatCurrency}
             formatDate={formatDate}
@@ -2160,16 +2208,13 @@ function GuidedInvoiceCreator({ invoice, clients, company, sellerConfig, generat
       {showClientForm && (
         <ClientEditorModal
           client={{}}
-          onSave={(clientData) => {
-            onCreateClient(clientData);
+          onSave={async (clientData) => {
+            const newClient = await onCreateClient(clientData);
             setShowClientForm(false);
-            // Select the new client after a short delay to allow state update
-            setTimeout(() => {
-              const newClient = clients.find(c => c.name === clientData.name);
-              if (newClient) {
-                handleClientChange(newClient.id);
-              }
-            }, 100);
+            if (newClient?.id) {
+              // Directly set the new client ID
+              setForm({ ...form, clientId: newClient.id });
+            }
           }}
           onCancel={() => setShowClientForm(false)}
         />
@@ -2759,8 +2804,9 @@ const styles = {
   },
   notification: {
     position: 'fixed',
-    top: '20px',
-    right: '20px',
+    top: '50%',
+    left: '50%',
+    transform: 'translate(-50%, -50%)',
     padding: '14px 24px',
     background: '#1a1a1a',
     color: '#fff',
@@ -2834,11 +2880,14 @@ const styles = {
   iconBtn: {
     background: 'none',
     border: 'none',
-    fontSize: '18px',
     cursor: 'pointer',
     padding: '6px',
     borderRadius: '4px',
     transition: 'background 0.15s ease',
+    color: '#1a1a1a',
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   invoiceMain: {
     display: 'flex',
@@ -3153,7 +3202,7 @@ const styles = {
   stepTotalBadge: {
     background: 'transparent',
     color: '#1a1a1a',
-    border: '2px solid #1a1a1a',
+    border: '1px solid #1a1a1a',
     padding: '12px 20px',
     borderRadius: '8px',
     fontSize: '14px',
@@ -3555,7 +3604,10 @@ const styles = {
     fontFamily: "'Lora', serif",
   },
   notesSection: {
-    marginTop: '32px',
+    position: 'absolute',
+    bottom: '25mm',
+    left: '20mm',
+    right: '20mm',
     paddingTop: '24px',
     borderTop: '1px solid #eee',
   },
@@ -3573,7 +3625,10 @@ const styles = {
     lineHeight: 1.5,
   },
   bankSection: {
-    marginTop: '24px',
+    position: 'absolute',
+    bottom: '60mm',
+    left: '20mm',
+    right: '20mm',
     padding: '16px',
     background: '#f8fafc',
     borderRadius: '8px',
@@ -3864,5 +3919,11 @@ const styles = {
     right: '20mm',
     fontSize: '11px',
     color: '#999',
+  },
+  a4BottomSection: {
+    position: 'absolute',
+    bottom: '25mm',
+    left: '20mm',
+    right: '20mm',
   },
 };
