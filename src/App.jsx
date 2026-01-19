@@ -808,19 +808,31 @@ export default function InvoiceApp() {
     if (!user) return;
 
     const invoice = invoices.find(i => i.id === invoiceId);
-    if (!invoice) return;
+    if (!invoice) {
+      notify('Facture introuvable', 'error');
+      return;
+    }
+
+    // Immediate feedback to confirm click worked
+    console.log('DELETE CLICK:', invoice.number);
 
     // Check if there are newer issued documents of the same type
-    const newerDocs = invoices.filter(i => 
-      i.type === invoice.type && 
-      i.status !== 'draft' && 
-      i.number && 
-      invoice.number &&
-      i.number.localeCompare(invoice.number) > 0
-    ).sort((a, b) => a.number.localeCompare(b.number));
+    const allSameType = invoices.filter(i => i.type === invoice.type && i.status !== 'draft' && i.number);
+    console.log('All issued docs of same type:', allSameType.map(i => i.number));
+    
+    const newerDocs = allSameType.filter(i => {
+      if (!invoice.number) return false;
+      const comparison = i.number.localeCompare(invoice.number);
+      console.log(`${i.number} compared to ${invoice.number}: ${comparison}`);
+      return comparison > 0;
+    }).sort((a, b) => a.number.localeCompare(b.number));
+
+    console.log('Newer docs:', newerDocs.map(d => d.number));
+    console.log('Will show modal?', newerDocs.length > 0 && invoice.status !== 'draft');
 
     if (newerDocs.length > 0 && invoice.status !== 'draft') {
       // Show confirmation modal with options
+      console.log('Setting delete confirmation modal...');
       setDeleteConfirmation({
         invoice,
         newerDocs,
@@ -837,8 +849,10 @@ export default function InvoiceApp() {
           setDeleteConfirmation(null);
         }
       });
+      console.log('Modal should now be visible');
     } else {
       // Simple confirmation for drafts or last document
+      console.log('Showing simple confirm dialog');
       if (window.confirm('Êtes-vous sûr de vouloir supprimer ce document ?')) {
         await performDelete(invoiceId);
       }
@@ -1481,6 +1495,9 @@ export default function InvoiceApp() {
                           <button 
                             onClick={(e) => {
                               e.stopPropagation();
+                              e.preventDefault();
+                              console.log('DELETE BUTTON CLICKED for invoice:', invoice.id, invoice.number);
+                              alert(`Clic sur suppression de: ${invoice.number || 'Sans numéro'}`);
                               deleteInvoice(invoice.id);
                             }}
                             style={{...styles.iconBtn, color: '#e53935'}}
